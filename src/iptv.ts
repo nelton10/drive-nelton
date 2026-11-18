@@ -76,7 +76,7 @@ async function ensureIptv(db: D1Database) {
 
 const shell = (body: string) => `<!doctype html><html lang="pt-BR"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer"><title>DriveFlin • IPTV</title>
+<meta name="referrer" content="same-origin"><title>DriveFlin • IPTV</title>
 <style>
 :root{color-scheme:dark}body{font:16px system-ui;background:#111217;color:#f6f6fa;max-width:1050px;margin:auto;padding:24px}
 h1{font-size:1.9rem}a{color:#9ac7ff}form,.panel{border:1px solid #303340;border-radius:12px;padding:16px;margin:15px 0;background:#1b1d26}
