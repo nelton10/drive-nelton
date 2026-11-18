@@ -89,28 +89,66 @@ td,th{padding:10px;text-align:left;border-bottom:1px solid #343844}
 <p><a href="/web/index.html">← Voltar ao Jellyfin</a> · <a href="/api/iptv/channels">API de canais</a></p>
 ${body}</body></html>`;
 
-async function readLimitedText(url: string): Promise<string> {
-  const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(12000),
-    headers: { Accept: "audio/x-mpegurl, application/vnd.apple.mpegurl, text/plain" } });
-  if (!response.ok) throw new Error("Falha ao carregar a lista do provedor (HTTP " + response.status + ").");
-  if (Number(response.headers.get("content-length") || 0) > 2_000_000) throw new Error("Lista acima do limite de 2 MB.");
-  if (!response.body) throw new Error("Resposta vazia do provedor.");
-  const reader = response.body.getReader();
-  let size = 0; const parts: Uint8Array[] = [];
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.length;
-      if (size > 2_000_000) throw new Error("Lista acima do limite de 2 MB.");
-      parts.push(value);
-    }
-  } finally { await reader.cancel().catch(() => {}); }
-  const data = new Uint8Array(size); let offset = 0;
-  for (const part of parts) { data.set(part, offset); offset += part.length; }
-  return new TextDecoder("utf-8").decode(data);
-}
+// Pull enough of an Xtream-style M3U for the first 1500 entries rather than requiring
+// the provider's (sometimes enormous) entire on-demand catalogue.
+const MAX_PLAYLIST_BYTES = 20_000_000;
+const MAX_CHANNELS = 1500;
+const MAX_REDIRECTS = 3;
 
+async function readLimitedText(rawUrl: string): Promise<string> {
+  let url = safeRemoteUrl(rawUrl);
+  if (!url) throw new Error("URL do provedor inválida.");
+  let response: Response | undefined;
+  for (let i = 0; i <= MAX_REDIRECTS; i++) {
+    response = await fetch(url.toString(), {
+      redirect: "manual",
+      signal: AbortSignal.timeout(45000),
+      headers: { Accept: "audio/x-mpegurl, application/vnd.apple.mpegurl, text/plain, */*" },
+    });
+    if (![301, 302, 303, 307, 308].includes(response.status)) break;
+    const location = response.headers.get("location");
+    if (!location || i === MAX_REDIRECTS) throw new Error("O provedor redirecionou a lista muitas vezes.");
+    const next = safeRemoteUrl(new URL(location, url).toString());
+    if (!next) throw new Error("Redirecionamento do provedor não permitido.");
+    url = next;
+  }
+  if (!response || !response.ok) {
+    const status = response?.status || "sem resposta";
+    throw new Error("O provedor não entregou a lista (HTTP " + status + "). Verifique usuário, senha e se aceita Cloudflare.");
+  }
+  if (!response.body) throw new Error("O provedor retornou uma resposta vazia.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytes = 0;
+  let records = 0;
+  let pendingLine = "";
+  let complete = false;
+  try {
+    while (bytes < MAX_PLAYLIST_BYTES && records < MAX_CHANNELS) {
+      const part = await reader.read();
+      if (part.done) { complete = true; break; }
+      bytes += part.value.byteLength;
+      // A few megabytes of M3U are enough for the first 1500 channel records.
+      const chunk = decoder.decode(part.value, { stream: true });
+      text += chunk;
+      // Count EXTINF only after a subsequent stream URI to avoid stopping in the middle.
+      const scan = pendingLine + chunk;
+      const lines = scan.split(/\r?\n/);
+      pendingLine = lines.pop() || "";
+      for (const line of lines) if (line.trim().startsWith("#EXTINF:")) records++;
+    }
+  } catch (error) {
+    throw new Error("Falha na leitura da lista. Verifique se o provedor permite acesso externo.");
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  text += decoder.decode();
+  if (bytes >= MAX_PLAYLIST_BYTES && records < MAX_CHANNELS && !complete) {
+    throw new Error("Lista maior que 20 MB antes dos primeiros 1500 itens. Use uma lista M3U menor.");
+  }
+  return text;
+}
 
 /** Lightweight Jellyfin-compatible Live TV channel DTOs, separate from Google Drive items. */
 function asChannelDto(row: any, origin: string) {
@@ -212,7 +250,7 @@ export function registerIptvRoutes(app: Hono<any>) {
     <label>Nome<input name="name" maxlength="100" required placeholder="Minha lista IPTV"></label>
     <label>URL HTTP(S) da lista M3U (opcional)<input name="url" type="url" placeholder="https://provedor.example/lista.m3u"></label>
     <label>Ou cole o texto M3U<textarea name="m3u" rows="5" placeholder="#EXTM3U"></textarea></label>
-    <button type="submit">Importar lista</button><p><small>Máximo de 1.500 canais e 2 MB por importação. Não publique URLs com senhas.</small></p></form>
+    <button type="submit">Importar lista</button><p><small>Até 1.500 canais por importação. Cole a lista ou use uma URL do seu provedor. As URLs de stream podem conter credenciais.</small></p></form>
     <div class="panel"><h2>Minhas listas</h2><table><tr><th>Nome</th><th>Canais</th><th>Ação</th></tr>
     ${rows || '<tr><td colspan="3">Nenhuma lista importada.</td></tr>'}</table></div>
     <p><a href="/iptv/watch">Abrir canais de TV</a></p>`));
@@ -224,7 +262,7 @@ export function registerIptvRoutes(app: Hono<any>) {
     const urlRaw = String(form.get("url") || "").trim();
     const pasted = String(form.get("m3u") || "");
     if (!name || (!urlRaw && !pasted)) return c.text("Informe o nome e uma URL ou conteúdo M3U.", 400);
-    if (pasted.length > 2_000_000) return c.text("O texto M3U excede 2 MB.", 413);
+    if (pasted.length > MAX_PLAYLIST_BYTES) return c.text("O texto M3U excede 20 MB.", 413);
     const url = urlRaw ? safeRemoteUrl(urlRaw) : null;
     if (urlRaw && !url) return c.text("URL não permitida: use HTTP(S) público.", 400);
     try {
@@ -239,14 +277,17 @@ export function registerIptvRoutes(app: Hono<any>) {
       try {
         // SQLite JSON1 expands the imported catalog in one D1 statement.
         // This avoids the Cloudflare per-invocation query limit for large lists.
-        const payload = JSON.stringify(channels.map((ch) => ({
-          id: crypto.randomUUID().replace(/-/g, ""), ...ch,
-        })));
-        await c.env.DB.prepare(`INSERT INTO IptvChannels(Id,SourceId,Name,Category,Logo,StreamUrl)
-          SELECT json_extract(value,'$.id'), ?, json_extract(value,'$.name'),
-                 json_extract(value,'$.group'), json_extract(value,'$.logo'),
-                 json_extract(value,'$.streamUrl') FROM json_each(?)`
-        ).bind(id, payload).run();
+        // Keep each D1 bound value modest: IPTV URL entries can be very long.
+        for (let offset = 0; offset < channels.length; offset += 80) {
+          const payload = JSON.stringify(channels.slice(offset, offset + 80).map((ch) => ({
+            id: crypto.randomUUID().replace(/-/g, ""), ...ch,
+          })));
+          await c.env.DB.prepare(`INSERT INTO IptvChannels(Id,SourceId,Name,Category,Logo,StreamUrl)
+            SELECT json_extract(value,'$.id'), ?, json_extract(value,'$.name'),
+                   json_extract(value,'$.group'), json_extract(value,'$.logo'),
+                   json_extract(value,'$.streamUrl') FROM json_each(?)`
+          ).bind(id, payload).run();
+        }
       } catch (err) {
         await c.env.DB.prepare("DELETE FROM IptvChannels WHERE SourceId=?").bind(id).run();
         await c.env.DB.prepare("DELETE FROM IptvSources WHERE Id=?").bind(id).run();
