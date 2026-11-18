@@ -14,6 +14,20 @@ Não é necessário definir `IPTV_SERVER_URL`, `IPTV_USERNAME`, `IPTV_PASSWORD` 
 
 **Segurança:** os endereços dos canais individuais recebidos do provedor continuam no D1 e podem conter credenciais. O player atual usa redirecionamentos, portanto esses endereços podem ficar visíveis nos dispositivos. A alteração **não** implementa um proxy privado de streaming. Use apenas provedores que você tem autorização para acessar e evite compartilhar a instalação.
 
+## Alternativa quando o provedor devolve HTTP 403 à Cloudflare
+
+Alguns provedores permitem baixar a playlist em aplicativos ou no computador, mas recusam acessos feitos a partir de Cloudflare Workers. Esse HTTP 403 não pode ser resolvido de forma garantida por uma alteração local no Worker.
+
+Para importar sem exigir acesso direto do Worker ao provedor:
+1. Baixe a playlist M3U autorizada no seu computador ou celular.
+2. Abra o painel **/iptv** com sua conta de administrador.
+3. Preencha o nome da lista e selecione o arquivo **.m3u** ou **.m3u8** em **Enviar arquivo**.
+4. Clique em **Importar lista**. O Worker processará o arquivo recebido e armazenará até 1.500 canais no D1, sem solicitar a playlist ao provedor.
+
+A URL completa no Secret **IPTV_PLAYLIST_URL** permanece como opção para atualizar diretamente na Cloudflare. O envio de arquivo é manual e **não atualiza automaticamente** quando o catálogo do provedor muda.
+
+**Atenção:** mesmo após importados, os streams individuais ainda dependem das regras do provedor. Um arquivo M3U importado com sucesso não garante que vídeos serão reproduzidos no navegador/Jellyfin. As URLs podem incluir credenciais e são armazenadas no D1 e encaminhadas aos players por redirecionamento.
+
 ## Como cadastrar
 
 1. Implante esta branch em uma instalação **de teste** no Cloudflare Workers, com o D1 `DB` configurado. A branch principal não é alterada.
