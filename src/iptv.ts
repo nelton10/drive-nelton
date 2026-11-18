@@ -114,7 +114,7 @@ async function readLimitedText(rawUrl: string): Promise<string> {
   }
   if (!response || !response.ok) {
     const status = response?.status || "sem resposta";
-    throw new Error("O provedor não entregou a lista (HTTP " + status + "). Verifique usuário, senha e se aceita Cloudflare.");
+    throw new Error("O provedor recusou a solicitação (HTTP " + status + "). Se a URL funciona em outros aplicativos, o provedor pode restringir requisições da Cloudflare. Baixe o arquivo M3U no seu dispositivo e envie pelo formulário /iptv.");
   }
   if (!response.body) throw new Error("O provedor retornou uma resposta vazia.");
   const reader = response.body.getReader();
@@ -329,17 +329,18 @@ export function registerIptvRoutes(app: Hono<any>) {
     const cloudflarePanel = `<div class="panel"><h2>☁️ IPTV configurada na Cloudflare</h2>
       <p>${cloudflareReady ? "Lista configurada na Cloudflare. Atualize para carregar os canais." :
         "Cadastre somente IPTV_PLAYLIST_URL como Secret no Worker."}</p>
-      <p><small>A URL da lista é mantida em um Secret e não é exibida neste painel.</small></p>
+      <p><small>A URL da lista é mantida em um Secret. Se o provedor devolver HTTP 403 ao Worker, importe um arquivo M3U baixado no seu dispositivo usando o formulário abaixo.</small></p>
       ${resultMessage}
       <form method="post" action="/iptv/refresh-cloudflare">
         <button type="submit" ${cloudflareReady ? "" : "disabled"}>Atualizar IPTV pela Cloudflare</button>
       </form></div>`;
     return c.html(shell(`${cloudflarePanel}<div class="panel"><p>Google Drive continua funcionando normalmente. Você também pode importar uma lista M3U manualmente.</p>
     <small>A reprodução é direta, sem transcodificação; depende do codec, CORS e permissões do provedor.</small></div>
-    <form method="post" action="/iptv/import"><h2>Adicionar lista M3U</h2>
+    <form method="post" action="/iptv/import" enctype="multipart/form-data"><h2>Adicionar lista M3U</h2>
     <label>Nome<input name="name" maxlength="100" required placeholder="Minha lista IPTV"></label>
     <label>URL HTTP(S) da lista M3U (opcional)<input name="url" type="url" placeholder="https://provedor.example/lista.m3u"></label>
     <label>Ou cole o texto M3U<textarea name="m3u" rows="5" placeholder="#EXTM3U"></textarea></label>
+    <label>Ou envie um arquivo .m3u/.m3u8 baixado no seu dispositivo<input name="playlistFile" type="file" accept=".m3u,.m3u8,audio/x-mpegurl,application/vnd.apple.mpegurl,text/plain"></label>
     <button type="submit">Importar lista</button><p><small>Até 1.500 canais por importação. Cole a lista ou use uma URL do seu provedor. As URLs de stream podem conter credenciais.</small></p></form>
     <div class="panel"><h2>Minhas listas</h2><table><tr><th>Nome</th><th>Canais</th><th>Ação</th></tr>
     ${rows || '<tr><td colspan="3">Nenhuma lista importada.</td></tr>'}</table></div>
@@ -351,18 +352,26 @@ export function registerIptvRoutes(app: Hono<any>) {
     const name = String(form.get("name") || "").trim().slice(0, 100);
     const urlRaw = String(form.get("url") || "").trim();
     const pasted = String(form.get("m3u") || "");
-    if (!name || (!urlRaw && !pasted)) return c.text("Informe o nome e uma URL ou conteúdo M3U.", 400);
-    if (pasted.length > MAX_PLAYLIST_BYTES) return c.text("O texto M3U excede 20 MB.", 413);
+    const fileInput = form.get("playlistFile");
+    const file = fileInput instanceof File && fileInput.size > 0 ? fileInput : null;
+    if (!name || (!urlRaw && !pasted.trim() && !file)) {
+      return c.text("Informe um nome e uma URL, texto M3U ou arquivo .m3u/.m3u8.", 400);
+    }
+    if (pasted.length > MAX_PLAYLIST_BYTES || (file && file.size > MAX_PLAYLIST_BYTES)) {
+      return c.text("A lista M3U excede 20 MB.", 413);
+    }
     const url = urlRaw ? safeRemoteUrl(urlRaw) : null;
-    if (urlRaw && !url) return c.text("URL não permitida: use HTTP(S) público.", 400);
+    if (urlRaw && !url && !pasted.trim() && !file) return c.text("URL não permitida: use HTTP(S) público.", 400);
     try {
-      const data = pasted.trim() ? pasted : await readLimitedText(url!.toString());
+      // Uploaded and pasted content are parsed locally by the Worker. They do
+      // not trigger a fetch to the IPTV provider, which might block Cloudflare.
+      const data = file ? await file.text() : pasted.trim() ? pasted : await readLimitedText(url!.toString());
       const channels = parseM3u(data);
       if (!channels.length) return c.text("Nenhum canal HTTP(S) válido encontrado.", 400);
       await ensureIptv(c.env.DB);
       const id = crypto.randomUUID().replace(/-/g, "");
       await c.env.DB.prepare("INSERT INTO IptvSources(Id,Name,SourceUrl) VALUES(?,?,?)")
-        .bind(id, name, url?.toString() || null).run();
+        .bind(id, name, file || pasted.trim() ? null : url?.toString() || null).run();
       // Batches limit the number of prepared queries per D1 transaction.
       try {
         // SQLite JSON1 expands the imported catalog in one D1 statement.
