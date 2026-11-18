@@ -2,6 +2,29 @@
 
 Esta branch adiciona **TV ao vivo M3U** ao backend compatível com Jellyfin do repositório `nelton10/drive-nelton`. O Google Drive, as bibliotecas existentes e o sistema de login continuam no projeto.
 
+## Configurar IPTV usando Secrets da Cloudflare (recomendado)
+
+Sem inserir a URL completa da playlist no navegador nem publicar senhas no GitHub:
+
+1. Acesse **Cloudflare Dashboard → Workers & Pages → seu Worker → Settings → Variables and Secrets**.
+2. Adicione estas variáveis ao ambiente **Production** (ou ao ambiente em uso):
+
+   | Variável | Tipo | Valor |
+   | --- | --- | --- |
+   | `IPTV_SERVER_URL` | **Secret** | Endereço-base HTTP(S) do provedor, sem `get.php`, query, usuário ou senha |
+   | `IPTV_USERNAME` | **Secret** | Nome de usuário do provedor |
+   | `IPTV_PASSWORD` | **Secret** | Senha do provedor |
+   | `IPTV_OUTPUT` | **Text** | `m3u8` (padrão) ou `ts` |
+
+3. Confirme as alterações/publicação das variáveis. Secrets precisam estar disponíveis para o Worker em execução.
+4. Abra `https://SEU-WORKER.workers.dev/iptv` como administrador.
+5. Clique em **Atualizar IPTV pela Cloudflare**. O Worker consulta `get.php` usando os Secrets e importa até 1.500 entradas M3U para o banco D1.
+6. Para atualizar novamente, use o mesmo botão. Se houver erro no download ou armazenamento, a lista anterior permanece disponível.
+
+A URL de obtenção da playlist não aparece no painel nem é salva na tabela `IptvSources`. **Aviso de segurança:** as URLs individuais de reprodução entregues pelo provedor ainda são armazenadas em `IptvChannels` e podem conter credenciais. O player atual as acessa por redirecionamento, o que pode expô-las ao dispositivo; esta alteração **não implementa proxy de streaming privado**. Não compartilhe o acesso ao servidor. Para garantir sigilo dessas URLs é necessário um proxy autenticado, com tratamento específico para HLS e segmentos.
+
+**Não inclua as credenciais no `wrangler.toml`, no `.dev.vars.example` nem em commits.** Usar Secrets na Cloudflare evita publicá-las no código. As variáveis IPTV são deliberadamente lidas diretamente do ambiente do Worker, não do KV de configuração do Google Drive.
+
 ## Como cadastrar
 
 1. Implante esta branch em uma instalação **de teste** no Cloudflare Workers, com o D1 `DB` configurado. A branch principal não é alterada.
