@@ -237,12 +237,16 @@ export function registerIptvRoutes(app: Hono<any>) {
         .bind(id, name, url?.toString() || null).run();
       // Batches limit the number of prepared queries per D1 transaction.
       try {
-        for (let start = 0; start < channels.length; start += 50) {
-          const group = channels.slice(start, start + 50).map((ch) => c.env.DB.prepare(
-            "INSERT INTO IptvChannels(Id,SourceId,Name,Category,Logo,StreamUrl) VALUES(?,?,?,?,?,?)"
-          ).bind(crypto.randomUUID().replace(/-/g, ""), id, ch.name, ch.group, ch.logo, ch.streamUrl));
-          await c.env.DB.batch(group);
-        }
+        // SQLite JSON1 expands the imported catalog in one D1 statement.
+        // This avoids the Cloudflare per-invocation query limit for large lists.
+        const payload = JSON.stringify(channels.map((ch) => ({
+          id: crypto.randomUUID().replace(/-/g, ""), ...ch,
+        })));
+        await c.env.DB.prepare(`INSERT INTO IptvChannels(Id,SourceId,Name,Category,Logo,StreamUrl)
+          SELECT json_extract(value,'$.id'), ?, json_extract(value,'$.name'),
+                 json_extract(value,'$.group'), json_extract(value,'$.logo'),
+                 json_extract(value,'$.streamUrl') FROM json_each(?)`
+        ).bind(id, payload).run();
       } catch (err) {
         await c.env.DB.prepare("DELETE FROM IptvChannels WHERE SourceId=?").bind(id).run();
         await c.env.DB.prepare("DELETE FROM IptvSources WHERE Id=?").bind(id).run();
