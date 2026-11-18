@@ -2,28 +2,17 @@
 
 Esta branch adiciona **TV ao vivo M3U** ao backend compatível com Jellyfin do repositório `nelton10/drive-nelton`. O Google Drive, as bibliotecas existentes e o sistema de login continuam no projeto.
 
-## Configurar IPTV usando Secrets da Cloudflare (recomendado)
-
-Sem inserir a URL completa da playlist no navegador nem publicar senhas no GitHub:
+## Configurar IPTV com uma única URL na Cloudflare (recomendado)
 
 1. Acesse **Cloudflare Dashboard → Workers & Pages → seu Worker → Settings → Variables and Secrets**.
-2. Adicione estas variáveis ao ambiente **Production** (ou ao ambiente em uso):
+2. Crie **um único Secret** chamado `IPTV_PLAYLIST_URL` e cole como valor a **URL M3U completa** fornecida por seu provedor (incluindo os parâmetros de autenticação, caso existam).
+3. Salve e publique as configurações no ambiente usado pelo Worker.
+4. Abra `https://SEU-WORKER.workers.dev/iptv` com a conta de administrador e clique em **Atualizar IPTV pela Cloudflare**.
+5. O Worker busca a lista e atualiza até 1.500 canais no D1. Em falhas, mantém o catálogo anterior.
 
-   | Variável | Tipo | Valor |
-   | --- | --- | --- |
-   | `IPTV_SERVER_URL` | **Secret** | Endereço-base HTTP(S) do provedor, sem `get.php`, query, usuário ou senha |
-   | `IPTV_USERNAME` | **Secret** | Nome de usuário do provedor |
-   | `IPTV_PASSWORD` | **Secret** | Senha do provedor |
-   | `IPTV_OUTPUT` | **Text** | `m3u8` (padrão) ou `ts` |
+Não é necessário definir `IPTV_SERVER_URL`, `IPTV_USERNAME`, `IPTV_PASSWORD` nem `IPTV_OUTPUT`. A URL é lida diretamente do Secret, não é exibida no painel, gravada em `IptvSources` nem incluída no GitHub.
 
-3. Confirme as alterações/publicação das variáveis. Secrets precisam estar disponíveis para o Worker em execução.
-4. Abra `https://SEU-WORKER.workers.dev/iptv` como administrador.
-5. Clique em **Atualizar IPTV pela Cloudflare**. O Worker consulta `get.php` usando os Secrets e importa até 1.500 entradas M3U para o banco D1.
-6. Para atualizar novamente, use o mesmo botão. Se houver erro no download ou armazenamento, a lista anterior permanece disponível.
-
-A URL de obtenção da playlist não aparece no painel nem é salva na tabela `IptvSources`. **Aviso de segurança:** as URLs individuais de reprodução entregues pelo provedor ainda são armazenadas em `IptvChannels` e podem conter credenciais. O player atual as acessa por redirecionamento, o que pode expô-las ao dispositivo; esta alteração **não implementa proxy de streaming privado**. Não compartilhe o acesso ao servidor. Para garantir sigilo dessas URLs é necessário um proxy autenticado, com tratamento específico para HLS e segmentos.
-
-**Não inclua as credenciais no `wrangler.toml`, no `.dev.vars.example` nem em commits.** Usar Secrets na Cloudflare evita publicá-las no código. As variáveis IPTV são deliberadamente lidas diretamente do ambiente do Worker, não do KV de configuração do Google Drive.
+**Segurança:** os endereços dos canais individuais recebidos do provedor continuam no D1 e podem conter credenciais. O player atual usa redirecionamentos, portanto esses endereços podem ficar visíveis nos dispositivos. A alteração **não** implementa um proxy privado de streaming. Use apenas provedores que você tem autorização para acessar e evite compartilhar a instalação.
 
 ## Como cadastrar
 
