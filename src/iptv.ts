@@ -176,7 +176,8 @@ function secretPlaylistUrl(env: IptvSecretEnv): string {
   if (output !== "ts" && output !== "m3u8")
     throw new Error("IPTV_OUTPUT deve ser ts ou m3u8.");
   // URL exists only inside the Worker request, not the UI, GitHub or Sources table.
-  const url = new URL("get.php", base.toString().replace(/\\/?$/, "/"));
+  const baseUrl = base.toString();
+  const url = new URL("get.php", baseUrl.endsWith("/") ? baseUrl : baseUrl + "/");
   url.searchParams.set("username", user);
   url.searchParams.set("password", pass);
   url.searchParams.set("type", "m3u_plus");
