@@ -308,6 +308,23 @@ export function registerIptvRoutes(app: Hono<any>) {
     return logo ? c.redirect(logo.toString(), 302) : c.notFound();
   });
 
+  // Admin-only action: secrets never leave the Worker environment.
+  app.post("/iptv/refresh-cloudflare", async (c) => {
+    if (!configuredIptv(c.env)) {
+      return c.text("Faltam credenciais IPTV nos Secrets da Cloudflare. Confira os três campos obrigatórios.", 400);
+    }
+    try {
+      const count = await refreshCloudflareIptv(c.env);
+      return c.redirect("/iptv?updated=" + count, 303);
+    } catch (error: any) {
+      // Never echo a remote URL, response body, or an exception containing credentials.
+      const message = error instanceof Error ? error.message : "Erro de importação";
+      const safe = /^(O provedor não entregou|O provedor retornou|O provedor redirecionou|Redirecionamento do provedor|Falha na leitura da lista|Lista maior que|A lista precisa|O provedor não retornou|Falha ao salvar os canais|IPTV_OUTPUT|IPTV_SERVER_URL|Configure IPTV_SERVER_URL|URL do provedor inválida)/.test(message)
+        ? message : "Não foi possível atualizar a IPTV. Verifique a resposta do provedor.";
+      return c.text("Atualização IPTV não concluída: " + safe, 400);
+    }
+  });
+
   // Admin-only HTML management routes: access control is provided by classifyRoute().
   app.get("/iptv", async (c) => {
     await ensureIptv(c.env.DB);
@@ -319,7 +336,19 @@ export function registerIptvRoutes(app: Hono<any>) {
       <form method="post" action="/iptv/delete" style="margin:0;border:0;padding:0;background:none">
       <input type="hidden" name="id" value="${escapeHtml(s.Id)}"><button>Remover</button></form></td></tr>`
     ).join("");
-    return c.html(shell(`<div class="panel"><p>Google Drive continua funcionando normalmente. Cadastre uma lista M3U para assistir à TV ao vivo.</p>
+    const cloudflareReady = configuredIptv(c.env);
+    const updatedCount = Number(c.req.query("updated") || 0);
+    const resultMessage = updatedCount > 0 && Number.isSafeInteger(updatedCount)
+      ? `<p style="color:#8fe1ac">Lista Cloudflare atualizada: ${updatedCount} canais.</p>` : "";
+    const cloudflarePanel = `<div class="panel"><h2>☁️ IPTV configurada na Cloudflare</h2>
+      <p>${cloudflareReady ? "Credenciais configuradas. Atualize para carregar os canais." :
+        "Configure os Secrets IPTV_SERVER_URL, IPTV_USERNAME e IPTV_PASSWORD no Worker e faça o deploy das variáveis."}</p>
+      <p><small>Formato: ${escapeHtml(c.env.IPTV_OUTPUT || "m3u8")}. Senhas e URLs completas não são exibidas nesta página.</small></p>
+      ${resultMessage}
+      <form method="post" action="/iptv/refresh-cloudflare">
+        <button type="submit" ${cloudflareReady ? "" : "disabled"}>Atualizar IPTV pela Cloudflare</button>
+      </form></div>`;
+    return c.html(shell(`${cloudflarePanel}<div class="panel"><p>Google Drive continua funcionando normalmente. Você também pode importar uma lista M3U manualmente.</p>
     <small>A reprodução é direta, sem transcodificação; depende do codec, CORS e permissões do provedor.</small></div>
     <form method="post" action="/iptv/import"><h2>Adicionar lista M3U</h2>
     <label>Nome<input name="name" maxlength="100" required placeholder="Minha lista IPTV"></label>
