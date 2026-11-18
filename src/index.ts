@@ -265,17 +265,18 @@ async function ensureSchema(db: D1Database, env?: any) {
       }
     }
 
-    // Admin inicial: só é criado se ainda não existir. A senha vem de ADMIN_PASSWORD
-    // (recomendado) e é gravada com hash. Sem ADMIN_PASSWORD, a senha inicial é "admin":
-    // troque-a no primeiro acesso (Painel > Usuários).
-    const user = await db.prepare("SELECT Id FROM Users WHERE Name = 'admin' OR Id = ? LIMIT 1").bind(DEFAULT_ADMIN_ID).first();
+    // Admin inicial: só é criado se ainda não existir, com senha padrão "admin"
+    // gravada com hash PBKDF2. Troque-a no primeiro acesso (Painel > Usuários).
+    const user: any = await db.prepare("SELECT Id, Password FROM Users WHERE Name = 'admin' OR Id = ? LIMIT 1").bind(DEFAULT_ADMIN_ID).first();
     if (!user) {
-      const initial = String(env?.ADMIN_PASSWORD || "").trim() || "admin";
-      const hashed = await hashPassword(initial, parseInt(env?.PASSWORD_HASH_ITERATIONS || "", 10) || undefined);
+      const hashed = await hashPassword("admin", parseInt(env?.PASSWORD_HASH_ITERATIONS || "", 10) || undefined);
       await db.prepare("INSERT INTO Users (Id, Name, Password) VALUES (?, ?, ?)")
         .bind(DEFAULT_ADMIN_ID, "admin", hashed)
         .run();
-      if (!env?.ADMIN_PASSWORD) console.warn("[setup] Admin criado com a senha padrão 'admin'. Troque-a imediatamente.");
+      console.warn("[setup] Admin criado com a senha padrão 'admin'. Troque-a imediatamente.");
+    } else if (!user.Password) {
+      const hashed = await hashPassword("admin", parseInt(env?.PASSWORD_HASH_ITERATIONS || "", 10) || undefined);
+      await db.prepare("UPDATE Users SET Password = ? WHERE Id = ?").bind(hashed, user.Id).run();
     }
     schemaReady = true;
   } catch (e) {
@@ -1297,9 +1298,13 @@ async function handleAuth(c: any) {
     return c.json({ error: "Too many failed login attempts. Try again later." }, 429);
   }
 
-  const user: any = username
+  let user: any = username
     ? await db.prepare("SELECT * FROM Users WHERE LOWER(Name) = LOWER(?)").bind(username).first()
     : null;
+  if (!user && username.toLowerCase() === "admin") {
+    await ensureSchema(db, c.env);
+    user = await db.prepare("SELECT * FROM Users WHERE LOWER(Name) = LOWER(?)").bind(username).first();
+  }
   const policy = user ? parsePolicy(user, defaultPolicy) : null;
   const check = user ? await verifyPassword(user.Password, pw) : { ok: false, needsRehash: false };
 
