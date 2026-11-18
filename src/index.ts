@@ -348,16 +348,20 @@ function isSameUser(id: string, s: SessionUser): boolean {
 }
 
 function isSameOriginRequest(c: any): boolean {
-  const host = new URL(c.req.url).host;
+  const target = new URL(c.req.url).origin;
   const origin = c.req.header("Origin");
+  // Explicit Origin always takes priority; never accept a conflicting Referer.
   if (origin) {
-    try { return new URL(origin).host === host; } catch (e) { return false; }
+    try { return new URL(origin).origin === target; } catch (e) { return false; }
   }
   const ref = c.req.header("Referer");
   if (ref) {
-    try { return new URL(ref).host === host; } catch (e) { return false; }
+    try { return new URL(ref).origin === target; } catch (e) { return false; }
   }
-  return false;
+  // Browser form submissions may send no Origin or Referer (privacy settings).
+  // Fetch Metadata distinguishes same-origin browser actions from CSRF submissions.
+  // Do not allow "same-site" because a sibling subdomain is not the same origin.
+  return c.req.header("Sec-Fetch-Site") === "same-origin";
 }
 
 function clientIp(c: any): string {
