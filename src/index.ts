@@ -592,7 +592,7 @@ function escapeHtml(v: any): string {
 app.get("/setup", async (c) => {
   const { results } = await c.env.DB.prepare("SELECT * FROM Libraries").all();
   let html = `<html><head><title>DriveFlin Setup</title><style>body{font-family:sans-serif;padding:20px;background:#141414;color:#fff;}table{width:100%;border-collapse:collapse;margin-bottom:20px;}th,td{border:1px solid #333;padding:10px;text-align:left;}input{padding:5px;}button{padding:8px 15px;background:#e50914;color:white;border:none;cursor:pointer;}</style></head><body>
-    <h1>DriveFlin Library Setup</h1>
+    <h1>DriveFlin Library Setup</h1>\n    <p style="padding:14px;border:1px solid #444;border-radius:8px"><a href="/iptv" style="color:#8bc4ff;font-size:18px">📺 Gerenciar IPTV (M3U)</a> — cadastre listas e canais de TV ao vivo.</p>
     <table>
       <tr><th>ID</th><th>Name</th><th>Google Drive Folder ID</th><th>Action</th></tr>`;
 
