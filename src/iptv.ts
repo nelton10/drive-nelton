@@ -150,6 +150,81 @@ async function readLimitedText(rawUrl: string): Promise<string> {
   return text;
 }
 
+type IptvSecretEnv = {
+  DB: D1Database;
+  IPTV_SERVER_URL?: string;
+  IPTV_USERNAME?: string;
+  IPTV_PASSWORD?: string;
+  IPTV_OUTPUT?: string;
+};
+
+const CLOUDFLARE_SOURCE_ID = "cloudflare-secrets";
+const CLOUDFLARE_SOURCE_NAME = "IPTV · Cloudflare";
+
+function configuredIptv(env: IptvSecretEnv): boolean {
+  return Boolean(env.IPTV_SERVER_URL?.trim() && env.IPTV_USERNAME?.trim() && env.IPTV_PASSWORD?.trim());
+}
+
+function secretPlaylistUrl(env: IptvSecretEnv): string {
+  const base = safeRemoteUrl(String(env.IPTV_SERVER_URL || "").trim());
+  if (!base || base.search || base.hash || base.pathname.includes(".."))
+    throw new Error("IPTV_SERVER_URL deve conter apenas o endereço público do servidor, sem parâmetros.");
+  const user = String(env.IPTV_USERNAME || "").trim();
+  const pass = String(env.IPTV_PASSWORD || "").trim();
+  if (!user || !pass) throw new Error("Configure IPTV_SERVER_URL, IPTV_USERNAME e IPTV_PASSWORD nos Secrets do Worker.");
+  const output = String(env.IPTV_OUTPUT || "m3u8").trim().toLowerCase();
+  if (output !== "ts" && output !== "m3u8")
+    throw new Error("IPTV_OUTPUT deve ser ts ou m3u8.");
+  // URL exists only inside the Worker request, not the UI, GitHub or Sources table.
+  const url = new URL("get.php", base.toString().replace(/\\/?$/, "/"));
+  url.searchParams.set("username", user);
+  url.searchParams.set("password", pass);
+  url.searchParams.set("type", "m3u_plus");
+  url.searchParams.set("output", output);
+  return url.toString();
+}
+
+async function insertIptvChannels(db: D1Database, sourceId: string, channels: Channel[]): Promise<void> {
+  for (let offset = 0; offset < channels.length; offset += 80) {
+    const payload = JSON.stringify(channels.slice(offset, offset + 80).map((ch) => ({
+      id: crypto.randomUUID().replace(/-/g, ""), ...ch,
+    })));
+    await db.prepare(`INSERT INTO IptvChannels(Id,SourceId,Name,Category,Logo,StreamUrl)
+      SELECT json_extract(value,'$.id'), ?, json_extract(value,'$.name'),
+             json_extract(value,'$.group'), json_extract(value,'$.logo'),
+             json_extract(value,'$.streamUrl') FROM json_each(?)`
+    ).bind(sourceId, payload).run();
+  }
+}
+
+async function refreshCloudflareIptv(env: IptvSecretEnv): Promise<number> {
+  // Do not log, persist or return the secret-backed source URL.
+  const playlist = await readLimitedText(secretPlaylistUrl(env));
+  const channels = parseM3u(playlist);
+  if (!channels.length) throw new Error("O provedor não retornou canais M3U válidos.");
+  await ensureIptv(env.DB);
+
+  // Populate a temporary source first, retaining the previous working list on failures.
+  const stagingId = "staging_" + crypto.randomUUID().replace(/-/g, "");
+  try {
+    await insertIptvChannels(env.DB, stagingId, channels);
+    // Swap the catalog in a single D1 batch transaction; the source URL stays NULL.
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM IptvChannels WHERE SourceId=?").bind(CLOUDFLARE_SOURCE_ID),
+      env.DB.prepare("DELETE FROM IptvSources WHERE Id=?").bind(CLOUDFLARE_SOURCE_ID),
+      env.DB.prepare("INSERT INTO IptvSources(Id,Name,SourceUrl,UpdatedAt) VALUES(?,?,NULL,CURRENT_TIMESTAMP)")
+        .bind(CLOUDFLARE_SOURCE_ID, CLOUDFLARE_SOURCE_NAME),
+      env.DB.prepare("UPDATE IptvChannels SET SourceId=? WHERE SourceId=?")
+        .bind(CLOUDFLARE_SOURCE_ID, stagingId),
+    ]);
+    return channels.length;
+  } catch {
+    // Clean up partial staging rows without exposing credentials.
+    await env.DB.prepare("DELETE FROM IptvChannels WHERE SourceId=?").bind(stagingId).run().catch(() => {});
+    throw new Error("Falha ao salvar os canais no Cloudflare D1.");
+  }
+}
+
 /** Lightweight Jellyfin-compatible Live TV channel DTOs, separate from Google Drive items. */
 function asChannelDto(row: any, origin: string) {
   const id = String(row.Id);
