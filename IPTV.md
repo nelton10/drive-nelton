@@ -2,6 +2,18 @@
 
 Esta branch adiciona **TV ao vivo M3U** ao backend compatível com Jellyfin do repositório `nelton10/drive-nelton`. O Google Drive, as bibliotecas existentes e o sistema de login continuam no projeto.
 
+## Configurar IPTV com uma única URL na Cloudflare (recomendado)
+
+1. Acesse **Cloudflare Dashboard → Workers & Pages → seu Worker → Settings → Variables and Secrets**.
+2. Crie **um único Secret** chamado `IPTV_PLAYLIST_URL` e cole como valor a **URL M3U completa** fornecida por seu provedor (incluindo os parâmetros de autenticação, caso existam).
+3. Salve e publique as configurações no ambiente usado pelo Worker.
+4. Abra `https://SEU-WORKER.workers.dev/iptv` com a conta de administrador e clique em **Atualizar IPTV pela Cloudflare**.
+5. O Worker busca a lista e atualiza até 1.500 canais no D1. Em falhas, mantém o catálogo anterior.
+
+Não é necessário definir `IPTV_SERVER_URL`, `IPTV_USERNAME`, `IPTV_PASSWORD` nem `IPTV_OUTPUT`. A URL é lida diretamente do Secret, não é exibida no painel, gravada em `IptvSources` nem incluída no GitHub.
+
+**Segurança:** os endereços dos canais individuais recebidos do provedor continuam no D1 e podem conter credenciais. O player atual usa redirecionamentos, portanto esses endereços podem ficar visíveis nos dispositivos. A alteração **não** implementa um proxy privado de streaming. Use apenas provedores que você tem autorização para acessar e evite compartilhar a instalação.
+
 ## Como cadastrar
 
 1. Implante esta branch em uma instalação **de teste** no Cloudflare Workers, com o D1 `DB` configurado. A branch principal não é alterada.

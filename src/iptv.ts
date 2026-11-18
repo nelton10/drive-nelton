@@ -150,6 +150,67 @@ async function readLimitedText(rawUrl: string): Promise<string> {
   return text;
 }
 
+type IptvSecretEnv = {
+  DB: D1Database;
+  IPTV_PLAYLIST_URL?: string;
+};
+
+const CLOUDFLARE_SOURCE_ID = "cloudflare-secrets";
+const CLOUDFLARE_SOURCE_NAME = "IPTV · Cloudflare";
+
+function configuredIptv(env: IptvSecretEnv): boolean {
+  return Boolean(String(env.IPTV_PLAYLIST_URL || "").trim());
+}
+
+function secretPlaylistUrl(env: IptvSecretEnv): string {
+  // The full M3U URL (including any provider-issued query parameters) is
+  // configured once as a Cloudflare Secret, never sent to the browser.
+  const url = safeRemoteUrl(String(env.IPTV_PLAYLIST_URL || "").trim());
+  if (!url) throw new Error("IPTV_PLAYLIST_URL deve ser uma URL HTTP(S) pública válida.");
+  return url.toString();
+}
+
+async function insertIptvChannels(db: D1Database, sourceId: string, channels: Channel[]): Promise<void> {
+  for (let offset = 0; offset < channels.length; offset += 80) {
+    const payload = JSON.stringify(channels.slice(offset, offset + 80).map((ch) => ({
+      id: crypto.randomUUID().replace(/-/g, ""), ...ch,
+    })));
+    await db.prepare(`INSERT INTO IptvChannels(Id,SourceId,Name,Category,Logo,StreamUrl)
+      SELECT json_extract(value,'$.id'), ?, json_extract(value,'$.name'),
+             json_extract(value,'$.group'), json_extract(value,'$.logo'),
+             json_extract(value,'$.streamUrl') FROM json_each(?)`
+    ).bind(sourceId, payload).run();
+  }
+}
+
+async function refreshCloudflareIptv(env: IptvSecretEnv): Promise<number> {
+  // Do not log, persist or return the secret-backed source URL.
+  const playlist = await readLimitedText(secretPlaylistUrl(env));
+  const channels = parseM3u(playlist);
+  if (!channels.length) throw new Error("O provedor não retornou canais M3U válidos.");
+  await ensureIptv(env.DB);
+
+  // Populate a temporary source first, retaining the previous working list on failures.
+  const stagingId = "staging_" + crypto.randomUUID().replace(/-/g, "");
+  try {
+    await insertIptvChannels(env.DB, stagingId, channels);
+    // Swap the catalog in a single D1 batch transaction; the source URL stays NULL.
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM IptvChannels WHERE SourceId=?").bind(CLOUDFLARE_SOURCE_ID),
+      env.DB.prepare("DELETE FROM IptvSources WHERE Id=?").bind(CLOUDFLARE_SOURCE_ID),
+      env.DB.prepare("INSERT INTO IptvSources(Id,Name,SourceUrl,UpdatedAt) VALUES(?,?,NULL,CURRENT_TIMESTAMP)")
+        .bind(CLOUDFLARE_SOURCE_ID, CLOUDFLARE_SOURCE_NAME),
+      env.DB.prepare("UPDATE IptvChannels SET SourceId=? WHERE SourceId=?")
+        .bind(CLOUDFLARE_SOURCE_ID, stagingId),
+    ]);
+    return channels.length;
+  } catch {
+    // Clean up partial staging rows without exposing credentials.
+    await env.DB.prepare("DELETE FROM IptvChannels WHERE SourceId=?").bind(stagingId).run().catch(() => {});
+    throw new Error("Falha ao salvar os canais no Cloudflare D1.");
+  }
+}
+
 /** Lightweight Jellyfin-compatible Live TV channel DTOs, separate from Google Drive items. */
 function asChannelDto(row: any, origin: string) {
   const id = String(row.Id);
@@ -233,6 +294,23 @@ export function registerIptvRoutes(app: Hono<any>) {
     return logo ? c.redirect(logo.toString(), 302) : c.notFound();
   });
 
+  // Admin-only action: secrets never leave the Worker environment.
+  app.post("/iptv/refresh-cloudflare", async (c) => {
+    if (!configuredIptv(c.env)) {
+      return c.text("Configure IPTV_PLAYLIST_URL como Secret na Cloudflare.", 400);
+    }
+    try {
+      const count = await refreshCloudflareIptv(c.env);
+      return c.redirect("/iptv?updated=" + count, 303);
+    } catch (error: any) {
+      // Never echo a remote URL, response body, or an exception containing credentials.
+      const message = error instanceof Error ? error.message : "Erro de importação";
+      const safe = /^(O provedor não entregou|O provedor retornou|O provedor redirecionou|Redirecionamento do provedor|Falha na leitura da lista|Lista maior que|A lista precisa|O provedor não retornou|Falha ao salvar os canais|IPTV_PLAYLIST_URL|URL do provedor inválida)/.test(message)
+        ? message : "Não foi possível atualizar a IPTV. Verifique a resposta do provedor.";
+      return c.text("Atualização IPTV não concluída: " + safe, 400);
+    }
+  });
+
   // Admin-only HTML management routes: access control is provided by classifyRoute().
   app.get("/iptv", async (c) => {
     await ensureIptv(c.env.DB);
@@ -244,7 +322,19 @@ export function registerIptvRoutes(app: Hono<any>) {
       <form method="post" action="/iptv/delete" style="margin:0;border:0;padding:0;background:none">
       <input type="hidden" name="id" value="${escapeHtml(s.Id)}"><button>Remover</button></form></td></tr>`
     ).join("");
-    return c.html(shell(`<div class="panel"><p>Google Drive continua funcionando normalmente. Cadastre uma lista M3U para assistir à TV ao vivo.</p>
+    const cloudflareReady = configuredIptv(c.env);
+    const updatedCount = Number(c.req.query("updated") || 0);
+    const resultMessage = updatedCount > 0 && Number.isSafeInteger(updatedCount)
+      ? `<p style="color:#8fe1ac">Lista Cloudflare atualizada: ${updatedCount} canais.</p>` : "";
+    const cloudflarePanel = `<div class="panel"><h2>☁️ IPTV configurada na Cloudflare</h2>
+      <p>${cloudflareReady ? "Lista configurada na Cloudflare. Atualize para carregar os canais." :
+        "Cadastre somente IPTV_PLAYLIST_URL como Secret no Worker."}</p>
+      <p><small>A URL da lista é mantida em um Secret e não é exibida neste painel.</small></p>
+      ${resultMessage}
+      <form method="post" action="/iptv/refresh-cloudflare">
+        <button type="submit" ${cloudflareReady ? "" : "disabled"}>Atualizar IPTV pela Cloudflare</button>
+      </form></div>`;
+    return c.html(shell(`${cloudflarePanel}<div class="panel"><p>Google Drive continua funcionando normalmente. Você também pode importar uma lista M3U manualmente.</p>
     <small>A reprodução é direta, sem transcodificação; depende do codec, CORS e permissões do provedor.</small></div>
     <form method="post" action="/iptv/import"><h2>Adicionar lista M3U</h2>
     <label>Nome<input name="name" maxlength="100" required placeholder="Minha lista IPTV"></label>
