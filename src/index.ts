@@ -6,6 +6,7 @@ import { runSync } from "./sync";
 import { cleanMediaTitle, cleanEpisodeTitle, searchTmdb, getTmdbDetails, getTvSeasonEpisodes, searchTmdbRemote, getTmdbImages } from "./tmdb";
 import { createDatabaseBackup, listDatabaseBackups, restoreDatabaseBackup } from "./backup";
 import { withPersistedVars } from "./config";
+import { registerIptvRoutes, iptvPlaybackInfo, iptvStreamRedirect } from "./iptv";
 import {
   extractAuth,
   extractBasic,
@@ -325,7 +326,7 @@ export function classifyRoute(method: string, rawPath: string): Access {
   // Legendas (o player as carrega por <track> sem cabeçalho).
   if (read && /^\/videos\/[^/]+\/[^/]+\/subtitles\/\d+\/(\d+\/)?stream\.[a-z0-9]+$/.test(p)) return "anon";
 
-  if (p === "/setup" || p.startsWith("/setup/") || p === "/sync" || p === "/fix-uuid") return "html-admin";
+  if (p === "/iptv" || p.startsWith("/iptv/") || p === "/setup" || p.startsWith("/setup/") || p === "/sync" || p === "/fix-uuid") return "html-admin";
 
   if (/^\/(backup|environment|scheduledtasks|system\/logs|system\/activitylog|library\/refresh|items\/root\/refresh|items\/remotesearch|users\/new)(\/|$)/.test(p)) return "admin";
   if (!read && /^\/(system\/configuration|branding\/configuration|library\/virtualfolders|devices)(\/|$)/.test(p)) return "admin";
@@ -591,7 +592,7 @@ function escapeHtml(v: any): string {
 app.get("/setup", async (c) => {
   const { results } = await c.env.DB.prepare("SELECT * FROM Libraries").all();
   let html = `<html><head><title>DriveFlin Setup</title><style>body{font-family:sans-serif;padding:20px;background:#141414;color:#fff;}table{width:100%;border-collapse:collapse;margin-bottom:20px;}th,td{border:1px solid #333;padding:10px;text-align:left;}input{padding:5px;}button{padding:8px 15px;background:#e50914;color:white;border:none;cursor:pointer;}</style></head><body>
-    <h1>DriveFlin Library Setup</h1>
+    <h1>DriveFlin Library Setup</h1>\n    <p style="padding:14px;border:1px solid #444;border-radius:8px"><a href="/iptv" style="color:#8bc4ff;font-size:18px">📺 Gerenciar IPTV (M3U)</a> — cadastre listas e canais de TV ao vivo.</p>
     <table>
       <tr><th>ID</th><th>Name</th><th>Google Drive Folder ID</th><th>Action</th></tr>`;
 
@@ -4835,7 +4836,10 @@ const handleNextUp = async (c: any) => {
 app.get("/Shows/NextUp", handleNextUp);
 app.get("/shows/nextup", handleNextUp);
 
-// LiveTv mocks to avoid 404s
+// Register IPTV channels, management and Jellyfin Live TV routes before the fallback.
+registerIptvRoutes(app);
+
+// LiveTv mocks for unsupported operations
 app.get("/LiveTv/*", (c) => c.json({ Items: [], TotalRecordCount: 0, StartIndex: 0 }));
 
 const handlePlaybackInfo = async (c: any) => {
@@ -4850,6 +4854,11 @@ const handlePlaybackInfo = async (c: any) => {
   const bodyId = body.Id || body.id || body.ItemId || body.itemId;
   const mediaSourceId = c.req.query("mediaSourceId") || c.req.query("MediaSourceId") || body.MediaSourceId || body.mediaSourceId;
   const targetId = paramId || queryId || bodyId || mediaSourceId;
+
+  if (targetId) {
+    const iptvInfo = await iptvPlaybackInfo(c.env.DB, String(targetId), currentToken(c));
+    if (iptvInfo) return c.json(iptvInfo);
+  }
 
   let row = await resolveItem(c.env.DB, targetId);
   if (!row && mediaSourceId && mediaSourceId !== targetId) {
@@ -4921,6 +4930,10 @@ const streamHandler = async (c: any) => {
   if (!currentAuth(c)) return c.json({ error: "Unauthorized" }, 401);
   try {
     const itemId = c.req.param("itemId");
+    if (itemId) {
+      const iptvUrl = await iptvStreamRedirect(c.env.DB, itemId);
+      if (iptvUrl) return c.redirect(iptvUrl, 302);
+    }
     const mediaSourceId = c.req.query("mediaSourceId") || c.req.query("MediaSourceId");
     const targetId = itemId || mediaSourceId;
 
