@@ -5,8 +5,11 @@ package-lock.json
 # Environment variables and secrets
 .dev.vars
 .env
+.env.*
+!.dev.vars.example
 *.pem
 *.key
+*.bak
 *.ps1
 upload-secrets*
 
