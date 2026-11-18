@@ -152,36 +152,21 @@ async function readLimitedText(rawUrl: string): Promise<string> {
 
 type IptvSecretEnv = {
   DB: D1Database;
-  IPTV_SERVER_URL?: string;
-  IPTV_USERNAME?: string;
-  IPTV_PASSWORD?: string;
-  IPTV_OUTPUT?: string;
+  IPTV_PLAYLIST_URL?: string;
 };
 
 const CLOUDFLARE_SOURCE_ID = "cloudflare-secrets";
 const CLOUDFLARE_SOURCE_NAME = "IPTV · Cloudflare";
 
 function configuredIptv(env: IptvSecretEnv): boolean {
-  return Boolean(env.IPTV_SERVER_URL?.trim() && env.IPTV_USERNAME?.trim() && env.IPTV_PASSWORD?.trim());
+  return Boolean(String(env.IPTV_PLAYLIST_URL || "").trim());
 }
 
 function secretPlaylistUrl(env: IptvSecretEnv): string {
-  const base = safeRemoteUrl(String(env.IPTV_SERVER_URL || "").trim());
-  if (!base || base.search || base.hash || base.pathname.includes(".."))
-    throw new Error("IPTV_SERVER_URL deve conter apenas o endereço público do servidor, sem parâmetros.");
-  const user = String(env.IPTV_USERNAME || "").trim();
-  const pass = String(env.IPTV_PASSWORD || "").trim();
-  if (!user || !pass) throw new Error("Configure IPTV_SERVER_URL, IPTV_USERNAME e IPTV_PASSWORD nos Secrets do Worker.");
-  const output = String(env.IPTV_OUTPUT || "m3u8").trim().toLowerCase();
-  if (output !== "ts" && output !== "m3u8")
-    throw new Error("IPTV_OUTPUT deve ser ts ou m3u8.");
-  // URL exists only inside the Worker request, not the UI, GitHub or Sources table.
-  const baseUrl = base.toString();
-  const url = new URL("get.php", baseUrl.endsWith("/") ? baseUrl : baseUrl + "/");
-  url.searchParams.set("username", user);
-  url.searchParams.set("password", pass);
-  url.searchParams.set("type", "m3u_plus");
-  url.searchParams.set("output", output);
+  // The full M3U URL (including any provider-issued query parameters) is
+  // configured once as a Cloudflare Secret, never sent to the browser.
+  const url = safeRemoteUrl(String(env.IPTV_PLAYLIST_URL || "").trim());
+  if (!url) throw new Error("IPTV_PLAYLIST_URL deve ser uma URL HTTP(S) pública válida.");
   return url.toString();
 }
 
@@ -312,7 +297,7 @@ export function registerIptvRoutes(app: Hono<any>) {
   // Admin-only action: secrets never leave the Worker environment.
   app.post("/iptv/refresh-cloudflare", async (c) => {
     if (!configuredIptv(c.env)) {
-      return c.text("Faltam credenciais IPTV nos Secrets da Cloudflare. Confira os três campos obrigatórios.", 400);
+      return c.text("Configure IPTV_PLAYLIST_URL como Secret na Cloudflare.", 400);
     }
     try {
       const count = await refreshCloudflareIptv(c.env);
@@ -320,7 +305,7 @@ export function registerIptvRoutes(app: Hono<any>) {
     } catch (error: any) {
       // Never echo a remote URL, response body, or an exception containing credentials.
       const message = error instanceof Error ? error.message : "Erro de importação";
-      const safe = /^(O provedor não entregou|O provedor retornou|O provedor redirecionou|Redirecionamento do provedor|Falha na leitura da lista|Lista maior que|A lista precisa|O provedor não retornou|Falha ao salvar os canais|IPTV_OUTPUT|IPTV_SERVER_URL|Configure IPTV_SERVER_URL|URL do provedor inválida)/.test(message)
+      const safe = /^(O provedor não entregou|O provedor retornou|O provedor redirecionou|Redirecionamento do provedor|Falha na leitura da lista|Lista maior que|A lista precisa|O provedor não retornou|Falha ao salvar os canais|IPTV_PLAYLIST_URL|URL do provedor inválida)/.test(message)
         ? message : "Não foi possível atualizar a IPTV. Verifique a resposta do provedor.";
       return c.text("Atualização IPTV não concluída: " + safe, 400);
     }
@@ -342,9 +327,9 @@ export function registerIptvRoutes(app: Hono<any>) {
     const resultMessage = updatedCount > 0 && Number.isSafeInteger(updatedCount)
       ? `<p style="color:#8fe1ac">Lista Cloudflare atualizada: ${updatedCount} canais.</p>` : "";
     const cloudflarePanel = `<div class="panel"><h2>☁️ IPTV configurada na Cloudflare</h2>
-      <p>${cloudflareReady ? "Credenciais configuradas. Atualize para carregar os canais." :
-        "Configure os Secrets IPTV_SERVER_URL, IPTV_USERNAME e IPTV_PASSWORD no Worker e faça o deploy das variáveis."}</p>
-      <p><small>Formato: ${escapeHtml(c.env.IPTV_OUTPUT || "m3u8")}. Senhas e URLs completas não são exibidas nesta página.</small></p>
+      <p>${cloudflareReady ? "Lista configurada na Cloudflare. Atualize para carregar os canais." :
+        "Cadastre somente IPTV_PLAYLIST_URL como Secret no Worker."}</p>
+      <p><small>A URL da lista é mantida em um Secret e não é exibida neste painel.</small></p>
       ${resultMessage}
       <form method="post" action="/iptv/refresh-cloudflare">
         <button type="submit" ${cloudflareReady ? "" : "disabled"}>Atualizar IPTV pela Cloudflare</button>
