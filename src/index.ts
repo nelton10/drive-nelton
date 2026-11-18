@@ -40,10 +40,7 @@ type Bindings = {
   JELLYFIN_WEB_URL?: string;
   BRANDING_LOGO_FILE_ID?: string;
   PASSWORD_HASH_ITERATIONS?: string;
-  IPTV_SERVER_URL?: string;
-  IPTV_USERNAME?: string;
-  IPTV_PASSWORD?: string;
-  IPTV_OUTPUT?: string;
+  IPTV_PLAYLIST_URL?: string;
   DB: D1Database;
   /** Guarda as variáveis de instalação para sobreviverem a redeploys (ver src/config.ts). */
   DRIVEFLIN_CONFIG?: KVNamespace;
